@@ -1,168 +1,191 @@
-# NEVORA — SSC AI Tutor
+# NEVORA AI
 
-PURE IN PURPOSE. TRUE IN VALUE.
+NEVORA AI is a server-backed SSC educational assistant designed around uploaded textbook/guide resources as the primary academic source. The application keeps accounts, conversations, source citations, PDF resources, extracted documents, chunks and pgvector embeddings in persistent server-side infrastructure.
 
-A working Next.js application: chat UI, Google sign-in, per-subject
-resource namespaces, a PDF ingest → chunk → embed → index pipeline,
-retrieval-augmented answers with textbook-priority logic, source
-citations, optional web search, and an owner-only resource manager.
+## What is included
 
-## Architecture at a glance
+- Next.js 14 + React + TypeScript + Tailwind
+- Email/password authentication with bcrypt-hashed passwords
+- Signed HTTP-only session cookies and server-side role enforcement
+- One protected Admin account seeded with the required initial password `261209`
+- Admin password change; the previous password stops working immediately
+- Ten configurable SSC subject slots, each with up to 5 PDF resources
+- Real device PDF upload; no browser/localStorage file persistence and no URL entry
+- Persistent PDF storage through S3-compatible object storage, with a local filesystem fallback for persistent Node servers
+- Automatic PDF processing: store → extract → optional OCR fallback → page metadata → chunk → embed → pgvector index → READY
+- Resource states: UPLOADING, PROCESSING, INDEXING, READY, FAILED
+- Retry, re-index and delete cleanup
+- Per-subject RAG filtering and textbook-first retrieval ordering
+- Page/chapter/section metadata and structured source citations
+- Printed-page and physical PDF-page metadata are kept separately when detectable
+- Chat history persistence, conversation deletion and reopening
+- Chat image attachment with preview; no voice feature
+- Explain action that stores a separate explanation on the assistant message
+- KaTeX mathematical rendering
+- Admin AI provider/model/temperature/retrieval/embedding configuration
+- Encrypted server-side provider API-key storage; keys are never sent to frontend JavaScript
+- Configurable NEVORA developer identity
+- Responsive Android-friendly UI with light/dark themes
+- PWA manifest, service worker and installable app shell
+- Privacy and About pages
+- Security headers, input validation and basic login/register rate limiting
 
+## Architecture
+
+```text
+Admin browser
+  │ multipart PDF
+  ▼
+Next.js Admin API
+  │
+  ├── persistent object storage (S3/R2/B2/etc.)
+  └── PostgreSQL + Prisma
+        │
+        ├── Resource metadata
+        ├── Document / page-aware Chunks
+        ├── pgvector embeddings
+        └── source metadata
+
+Chat
+  │ selected subject + question
+  ▼
+subject-scoped vector retrieval
+  │
+  ▼
+textbook → guide → reference → notes priority
+  │
+  ▼
+configured AI provider
+  │
+  ▼
+answer + structured source citations
 ```
-Upload PDF ──▶ Parse text (+ OCR fallback) ──▶ Chunk (page-tagged)
-           ──▶ Embed chunks ──▶ Store in DB (Chunk table = the index)
-           ──▶ Resource marked READY
 
-Question ──▶ Embed question ──▶ Cosine-similarity search over that
-          subject's stored chunks ONLY ──▶ top matches + chat history
-          ──▶ sent to the AI model with a textbook-priority system
-          prompt ──▶ answer + source citations
+## Production services
+
+Required:
+
+1. PostgreSQL with the `vector`/pgvector extension
+2. A configured chat AI provider API key
+3. An OpenAI `text-embedding-3-small` key for the current 1536-dimensional pgvector schema
+4. Persistent object storage for PDFs in production (S3-compatible storage is recommended)
+
+The application does not require a manual backend command after each PDF upload. The Admin upload request stores the file and automatically runs the processing pipeline. Processing is server-side and the resource remains persisted if the browser closes or the user logs out.
+
+For large files or high-volume deployments, use a deployment environment that supports long-running Node requests or move the same `processResource()` function behind a persistent worker/queue. The application includes stale-processing recovery: resources left in PROCESSING/INDEXING for more than 15 minutes are marked FAILED and can be retried.
+
+### Persistent storage
+
+Configure all S3-compatible variables:
+
+- `S3_BUCKET`
+- `S3_ACCESS_KEY_ID`
+- `S3_SECRET_ACCESS_KEY`
+- `S3_REGION`
+- `S3_ENDPOINT`
+
+If all are absent, PDFs are written under `NEVORA_STORAGE_DIR` (default `./storage`). This fallback is suitable for local development or a persistent Node server. It is **not** durable on typical ephemeral/serverless filesystems, so production serverless deployments should use object storage.
+
+## Environment variables
+
+Copy `.env.example` to `.env` and supply real secrets. Never commit `.env`.
+
+- `DATABASE_URL`
+- `NEVORA_SESSION_SECRET` — long random secret for sessions
+- `NEVORA_SECRET_KEY` — 32+ character secret used to encrypt provider keys
+- `NEVORA_ADMIN_EMAIL` — initial admin email used by the seed script
+- `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION`, `S3_ENDPOINT`
+- `NEVORA_STORAGE_DIR` — optional local persistent storage path
+
+Provider API keys are entered from Admin → AI Configuration and encrypted in the database. Do not put provider API keys in `.env`.
+
+## Database setup
+
+1. Provision PostgreSQL with pgvector support.
+2. Ensure the vector extension is available:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
-The raw PDF (`data/uploads/`) and the searchable index (`Chunk` rows
-in the database) are deliberately separate. Chat-time retrieval never
-re-opens the PDF — see `src/lib/retrieval.ts`.
-
-## Centralized configuration
-
-Everything that might change later lives in ONE place:
-
-- **API keys / model / provider** → `.env` (copy from `.env.example`),
-  read only through `src/lib/config.ts`. Change the model or swap
-  providers by editing this file/`.env` — no other file references
-  a key directly. Keys are never sent to the browser (Next.js only
-  exposes `NEXT_PUBLIC_*` vars client-side, and none are used here).
-- **Subject list** → `src/lib/subjects.ts`. Add/rename/remove a
-  subject, then run `npx prisma db seed` (or restart — the admin
-  panel reads live from the DB, so existing resources are unaffected
-  by reordering).
-- **Branding text** → `src/lib/branding.ts` (client-safe) and
-  `src/lib/config.ts` (`branding` key, server-side).
-
-## Setup
+3. Install dependencies:
 
 ```bash
 npm install
-cp .env.example .env        # fill in the values below
-npx prisma db push          # create the SQLite database
-npx prisma db seed          # load the default subject list
-npm run dev
 ```
 
-### Required for basic chat to work
-- `ANTHROPIC_API_KEY` — from console.anthropic.com
-- `OPENAI_API_KEY` — used only for embeddings (resource indexing/search)
-- `NEXTAUTH_SECRET` — any long random string (`openssl rand -base64 32`)
-- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google Cloud Console →
-  OAuth consent screen → Web application → redirect URI
-  `http://localhost:3000/api/auth/callback/google` (add your deployed
-  domain's equivalent URL too)
-- `OWNER_EMAIL` — the Google account that should get Resource Manager
-  access. The first time you sign in with this email, `isOwner` is
-  set automatically (see `src/lib/auth.ts`).
+4. Apply Prisma migrations:
 
-### Optional
-- `WEB_SEARCH_PROVIDER=tavily` + `WEB_SEARCH_API_KEY` — enables real
-  web search for "Others" mode / questions outside your uploaded
-  resources. Leave as `none` and the app still works — it just won't
-  add web results.
+```bash
+npx prisma migrate deploy
+```
 
-## Adding a resource (no code changes needed)
+5. Seed the initial subjects, system configuration and Admin account:
 
-1. Sign in with the owner Google account → **Resource manager**.
-2. Pick a subject, name the document, mark it Textbook / Guide /
-   Reference, upload the PDF.
-3. Status shows **PROCESSING** while it's parsed/chunked/embedded,
-   then flips to **READY**. Only READY resources are searched.
-4. Remove or re-index anytime from the same screen.
+```bash
+npm run prisma:seed
+```
 
-Textbook-tagged resources are given a small ranking boost over
-Guide/Reference at query time (see `src/lib/retrieval.ts`), and the
-AI's system prompt (`src/lib/ai.ts`) explicitly instructs it to treat
-textbook content as the authority for exam-standard facts, using
-guide content only to learn answer structure/style — matching the
-"exam correctness over general internet correctness" requirement.
+The initial Admin password is `261209`. Change it immediately from Admin → Security. The seed also deactivates legacy subject records that are no longer part of the ten default SSC subjects.
 
-## OCR for scanned PDFs
+## PDF/OCR processing
 
-`src/lib/ingest.ts` detects pages with near-zero extracted text and
-routes them to an OCR fallback (`tesseract.js`, English+Bangla).
-Rendering a specific PDF page to an image for OCR needs a rasterizer
-(e.g. `pdftoppm`, or `pdf-lib`/`pdf.js` canvas rendering) — that one
-integration point is marked clearly in the file rather than silently
-skipped, since the right choice depends on your hosting environment
-(serverless vs. a container with poppler-utils installed).
+Normal text PDFs use native per-page PDF text extraction. Pages with little/no native text attempt a server-side OCR fallback using Tesseract.js with English/Bangla language data and PDF page rendering. OCR is best-effort; NEVORA never invents text or page metadata when extraction is unavailable.
 
-## Get a live URL in ~5 minutes (Vercel)
+Each resource stores:
 
-This is how you turn the code into something you and your friend can
-actually open on a phone — no server management.
+- resource ID
+- original filename
+- Admin-provided source title
+- resource type
+- subject
+- file size
+- upload/update timestamps
+- page count
+- processing status/progress
+- OCR usage/quality indicator
+- processing error when failed
 
-1. Create a free account at vercel.com (sign in with GitHub is easiest).
-2. Push this project to a new GitHub repo (or use Vercel's "Upload"
-   option to drag-and-drop the folder — no git required).
-3. In Vercel: **New Project** → select the repo/folder → it auto-detects
-   Next.js.
-4. Before deploying, add **Environment Variables** (same names as
-   `.env.example`): `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
-   `NEXTAUTH_SECRET`, `NEXTAUTH_URL` (set to the Vercel URL Vercel
-   shows you, e.g. `https://nevora-yourname.vercel.app`),
-   `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OWNER_EMAIL`,
-   `DATABASE_URL` (see database note below).
-5. For the database, SQLite's local file won't persist on Vercel —
-   create a free Postgres database in 1 click via Vercel's Storage
-   tab (or neon.tech / supabase.com), copy its connection string into
-   `DATABASE_URL`, and change `provider = "sqlite"` to
-   `provider = "postgresql"` in `prisma/schema.prisma` before pushing.
-6. In Google Cloud Console, add
-   `https://your-vercel-url.vercel.app/api/auth/callback/google` as
-   an authorized redirect URI on your OAuth client.
-7. Deploy. Visit the URL — that's your live NEVORA.
+Re-indexing first removes the old Document/Chunk/vector data, then rebuilds the resource, so a normal re-index does not create duplicate indexed records.
 
-## Installing it like an app on Android
+## Source citations
 
-The app ships as a PWA (`public/manifest.json`, `public/sw.js`).
-Once it's live at a real URL:
-1. Open the URL in Chrome on Android.
-2. Tap the menu (⋮) → **Add to Home screen** / **Install app**.
-3. It installs with the NEVORA icon, opens full-screen without browser
-   chrome, and behaves like a native app — without needing a signed
-   `.apk` or Play Store listing. If you later want an actual `.apk`
-   (e.g. for Play Store distribution), wrap this same code with
-   Capacitor (`npx cap add android`) — no rewrite needed, it reuses
-   this whole app as-is.
+Retrieved chunks carry:
 
-## Production notes
+- source title
+- chapter
+- section
+- physical PDF page
+- printed page when detectable
+- chunk ID
 
-- **Database**: SQLite is fine for one or two users. For real
-  multi-user use, change `provider` in `prisma/schema.prisma` from
-  `sqlite` to `postgresql` and point `DATABASE_URL` at a real Postgres
-  instance (e.g. Supabase, Neon, Railway) — no application code
-  changes needed, Prisma abstracts the difference.
-- **File storage**: raw PDFs are saved to `data/uploads/` on local
-  disk. On serverless hosting (Vercel) this is ephemeral — swap the
-  two lines in `src/app/api/upload/route.ts` for an S3/GCS upload.
-- **Ingestion queue**: large PDF ingestion currently runs as a
-  fire-and-forget async call after upload. This works on a
-  long-running server (Render, Fly.io, a VPS) but can be killed
-  early by serverless function timeouts. For heavy use, move the
-  `ingestResource()` call into a real queue (BullMQ + Redis, or a
-  cron-polled "PROCESSING" table) — the function itself doesn't need
-  to change.
-- **Multi-user isolation**: chats and resources are already scoped by
-  `userId` at the query level (see the API routes) — a second user
-  signing in gets their own chat history automatically. Resources
-  uploaded by the owner are visible to all users of a subject (that's
-  the intended "shared knowledge base"); flag if you wanted per-user
-  private resources instead.
+The UI displays the exact page when known and explicitly shows when the exact page is unavailable. It never substitutes a guessed page number.
 
-## What's a placeholder vs. production-ready
+## Authentication and security
 
-Production-ready as written: subject namespacing, chunk-and-embed
-indexing, retrieval, textbook-priority prompting, source citations,
-chat CRUD, TTS, owner-gated admin panel, centralized config.
+- Passwords are hashed with bcrypt.
+- Sessions are signed JWTs in HTTP-only, SameSite cookies.
+- Admin authorization is enforced on the server for every Admin API.
+- Provider keys are encrypted at rest with AES-256-GCM using `NEVORA_SECRET_KEY`.
+- Frontend responses only contain masked key previews.
+- PDF uploads are limited to 25 MB, validated as PDFs, and stored using generated safe object keys.
+- Image chat input is limited to JPG/PNG/WebP and 6 MB.
+- Login and registration have basic per-process rate limiting.
+- Security headers are configured in `next.config.js`.
+- No Google OAuth or provider callback configuration is required.
 
-Needs a decision from you before going live: which OCR rasterizer to
-wire in, which file storage backend, and which queue for ingestion at
-scale (all called out above, each is a small, isolated change).
+The rate limiter is intentionally lightweight and process-local. For a large multi-instance deployment, place authentication rate limiting at the platform/WAF layer as well.
+
+## PWA / Android
+
+The project includes a web manifest, SVG app icons, service worker and responsive viewport configuration. Android Chrome can install it using its normal Add to Home screen/install flow when the deployment is served over HTTPS.
+
+This is a web PWA, not a native APK build.
+
+## Verification performed in this build environment
+
+The repository was inspected after implementation and all TypeScript/TSX files were syntax-transpiled with the available TypeScript compiler. Obvious TODO/not-implemented runtime placeholders were scanned for and removed where applicable.
+
+A full `npm install` / Next production build and Prisma validation could not be completed in this environment because external package installation/network access timed out and no installed `node_modules`/Prisma CLI was available. Consequently, the final project still requires the normal dependency installation plus real PostgreSQL/pgvector, AI API and object-storage integration test in the deployment environment.
+
+These are infrastructure/testing limitations, not browser-only mock implementations.

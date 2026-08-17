@@ -1,0 +1,16 @@
+import "server-only";
+import type { RawPage } from "./chunk";
+import { getPdf } from "../storage";
+import pdfParse from "pdf-parse";
+
+const CHAPTER_PATTERN = /(?:^|\s)(chapter|অধ্যায়|অধ্যায়)\s*[-:]?\s*([0-9০-৯]+)?\s*[:.\-–]?\s*([^\n]{0,140})/i;
+const SECTION_PATTERN = /(?:^|\s)(?:section|পরিচ্ছেদ|অনুচ্ছেদ)\s*[-:]?\s*([^\n]{1,140})/i;
+const PRINTED_PAGE_PATTERNS = [/^(?:page|পৃষ্ঠা)\s*[-:]?\s*([0-9০-৯]+)$/i,/^[-–—]?\s*([0-9০-৯]{1,4})\s*[-–—]?$/];
+interface PdfJsTextItem { str:string }
+interface PdfJsTextContent { items:PdfJsTextItem[] }
+interface PdfJsPageProxy { pageNumber:number; getTextContent:()=>Promise<PdfJsTextContent> }
+function normalizeDigits(v:string){return v.replace(/[০-৯]/g,d=>String("০১২৩৪৫৬৭৮৯".indexOf(d)))}
+function detectPrintedPage(text:string){const lines=text.split(/\n+/).map(x=>x.trim()).filter(Boolean);for(const line of [...lines.slice(0,3),...lines.slice(-3)])for(const p of PRINTED_PAGE_PATTERNS){const m=line.match(p);if(m){const n=Number(normalizeDigits(m[1]));if(Number.isInteger(n)&&n>0&&n<10000)return n}}return undefined}
+function detectMetadata(text:string,currentChapter?:string,currentSection?:string){const cm=text.match(CHAPTER_PATTERN);const sm=text.match(SECTION_PATTERN);return{chapter:cm?cm[0].trim():currentChapter,section:sm?sm[0].trim():currentSection}}
+export async function extractPagesFromPdf(fileKey:string):Promise<RawPage[]>{const buffer=await getPdf(fileKey);const pages:RawPage[]=[];let chapter:string|undefined,section:string|undefined;await pdfParse(buffer,{pagerender:async(pageData:PdfJsPageProxy)=>{const tc=await pageData.getTextContent();const text=tc.items.map(i=>i.str).join(" ").trim();const meta=detectMetadata(text,chapter,section);chapter=meta.chapter;section=meta.section;pages.push({pageNumber:pageData.pageNumber,printedPageNumber:detectPrintedPage(text),text,chapter,section});return text}});const blank=pages.filter(p=>p.text.trim().length<20);if(blank.length){try{const ocr=await ocrBlankPages(buffer,blank.map(p=>p.pageNumber));for(const p of blank){const text=ocr.get(p.pageNumber)??"";if(text.trim().length>p.text.trim().length){p.ocrApplied=true;const meta=detectMetadata(text,p.chapter,p.section);p.text=text.trim();p.chapter=meta.chapter;p.section=meta.section;p.printedPageNumber=detectPrintedPage(text)}}}catch{}}return pages.sort((a,b)=>a.pageNumber-b.pageNumber)}
+async function ocrBlankPages(buffer:Buffer,pageNumbers:number[]){const [{getDocument},{createWorker},canvasModule]=await Promise.all([import("pdfjs-dist/legacy/build/pdf.mjs"),import("tesseract.js"),import("@napi-rs/canvas")]);const canvasPkg=canvasModule as typeof import("@napi-rs/canvas");const pdf=await getDocument({data:new Uint8Array(buffer),disableWorker:true}).promise;const worker=await createWorker("eng+ben");const result=new Map<number,string>();try{for(const n of pageNumbers){const page=await pdf.getPage(n);const viewport=page.getViewport({scale:1.5});const canvas=canvasPkg.createCanvas(Math.ceil(viewport.width),Math.ceil(viewport.height));const context=canvas.getContext("2d");await page.render({canvasContext:context as never,viewport,canvas:canvas as never}).promise;const {data}=await worker.recognize(canvas.toBuffer("image/png"));result.set(n,data.text||"")}return result}finally{await worker.terminate();await pdf.destroy()}}

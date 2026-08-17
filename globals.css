@@ -1,0 +1,12 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+:root { color-scheme: light; }
+html.dark { color-scheme: dark; }
+body { @apply font-body text-nevora-ink dark:text-nevora-cloud; }
+.nevora-shell { position:relative; isolation:isolate; background:radial-gradient(70% 50% at 15% 0%,rgba(31,184,166,.10),transparent 65%),radial-gradient(55% 45% at 100% 20%,rgba(201,162,75,.09),transparent 65%),theme('colors.nevora.paper'); }
+.dark .nevora-shell { background:radial-gradient(70% 50% at 15% 0%,rgba(31,184,166,.13),transparent 65%),radial-gradient(55% 45% at 100% 20%,rgba(201,162,75,.08),transparent 65%),theme('colors.nevora.midnight'); }
+.nevora-shell::before { content:""; position:fixed; inset:0; z-index:-1; pointer-events:none; opacity:.055; background-image:linear-gradient(135deg,currentColor .5px,transparent .5px),linear-gradient(45deg,currentColor .5px,transparent .5px); background-size:44px 44px; mask-image:radial-gradient(80% 60% at 50% 15%,black,transparent); }
+.nevora-scrollbar::-webkit-scrollbar{width:6px}.nevora-scrollbar::-webkit-scrollbar-thumb{background:rgba(31,184,166,.25);border-radius:999px}
+input,textarea,select,button{font:inherit}button{touch-action:manipulation}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
